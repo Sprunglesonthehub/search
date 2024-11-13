@@ -1,0 +1,147 @@
+#!/bin/bash
+
+# Install multiple dependencies in parallel if not already installed
+install_dependencies() {
+    packages=("$@")
+    not_installed=()
+
+    for package in "${packages[@]}"; do
+        if ! pacman -Q "$package" &>/dev/null; then
+            not_installed+=("$package")
+        fi
+    done
+
+    if [ ${#not_installed[@]} -gt 0 ]; then
+        echo "Installing missing packages: ${not_installed[@]}"
+        sudo pacman -S --noconfirm "${not_installed[@]}" &>/dev/null &
+        wait # Wait for installation to complete
+    else
+        echo "All required packages are already installed."
+    fi
+}
+
+# Function to detect GPU and set up GPU acceleration
+detect_and_setup_gpu() {
+    echo "Detecting GPU..."
+
+    # Detect GPU type (Intel, NVIDIA, AMD)
+    if lspci | grep -i "Intel" | grep -i "Arc" &>/dev/null; then
+        GPU_TYPE="intel"
+    elif lspci | grep -i "NVIDIA" &>/dev/null; then
+        GPU_TYPE="nvidia"
+    elif lspci | grep -i "AMD" &>/dev/null; then
+        GPU_TYPE="amd"
+    else
+        GPU_TYPE="cpu"
+    fi
+
+    # Set up corresponding GPU acceleration
+    case "$GPU_TYPE" in
+        intel)
+            echo "Intel GPU detected. Setting up Level Zero for GPU acceleration..."
+            install_dependencies "intel-level-zero" "intel-oneapi-basekit" "intel-oneapi-dev-essentials"
+            export LEVEL_ZERO_DRIVER="libze_intel_gpu.so"
+            export ONEAPI_ROOT="/opt/intel/oneapi"
+            source "$ONEAPI_ROOT/setvars.sh"
+            ;;
+        nvidia)
+            echo "NVIDIA GPU detected. Setting up CUDA..."
+            install_dependencies "nvidia" "nvidia-utils" "cuda"
+            export PATH=/usr/local/cuda/bin:$PATH
+            export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+            ;;
+        amd)
+            echo "AMD GPU detected. Setting up ROCm..."
+            install_dependencies "rocm-dkms" "rocm-dev"
+            export PATH=/opt/rocm/bin:$PATH
+            export LD_LIBRARY_PATH=/opt/rocm/lib:$LD_LIBRARY_PATH
+            ;;
+        cpu)
+            echo "No supported GPU detected, using CPU acceleration."
+            ;;
+    esac
+}
+
+# Function to open results in the browser
+open_results_in_browser() {
+    google_results="$1"
+    bing_results="$2"
+    searx_results="$3"
+
+    # Construct search URLs
+    google_url="https://www.google.com/search?q=$(echo "$google_results" | sed 's/ /+/g')"
+    bing_url="https://www.bing.com/search?q=$(echo "$bing_results" | sed 's/ /+/g')"
+    searx_url="https://search.rhscz.eu/search?q=$(echo "$searx_results" | sed 's/ /+/g')"
+
+    # Detect and use the appropriate browser (epiphany, firefox, or default)
+    browser=$(get_browser)
+    case "$browser" in
+        epiphany)
+            epiphany "$google_url" "$bing_url" "$searx_url" &
+            ;;
+        firefox)
+            firefox "$google_url" "$bing_url" "$searx_url" &
+            ;;
+        *)
+            xdg-open "$google_url" "$bing_url" "$searx_url" &
+            ;;
+    esac
+    wait # Ensure the browser launches before proceeding
+}
+
+# Function to handle browser selection
+get_browser() {
+    if command -v epiphany &>/dev/null; then
+        echo "epiphany"
+    elif command -v firefox &>/dev/null; then
+        echo "firefox"
+    else
+        default_browser=$(xdg-settings get default-web-browser)
+        if [[ -z "$default_browser" ]]; then
+            echo "No browser found!"
+            exit 1
+        fi
+        echo "$default_browser"
+    fi
+}
+
+# Function to gather user input and initiate search
+get_search_query() {
+    query=$(zenity --entry --title="Search Query" --text="Enter your search query:" --width=400 --height=200)
+    echo "$query"
+}
+
+# Function to search engines
+search_engines() {
+    query="$1"
+    google_results="https://www.google.com/search?q=$(echo "$query" | sed 's/ /+/g')"
+    bing_results="https://www.bing.com/search?q=$(echo "$query" | sed 's/ /+/g')"
+    searx_results="https://search.rhscz.eu/search?q=$(echo "$query" | sed 's/ /+/g')"
+
+    # Open the results in the browser
+    open_results_in_browser "$google_results" "$bing_results" "$searx_results"
+}
+
+# Main Program
+main() {
+    # Install required packages
+    install_dependencies "curl" "zenity" "epiphany" "firefox"
+
+    # GPU setup
+    detect_and_setup_gpu
+
+    # Get search query from the user
+    query=$(get_search_query)
+
+    # If the user cancels or leaves the query empty
+    if [[ -z "$query" ]]; then
+        zenity --info --text="No search query entered, exiting..." --width=400 --height=200
+        exit 1
+    fi
+
+    # Perform search across engines and show results
+    search_engines "$query"
+}
+
+# Execute the main function
+main
